@@ -1,111 +1,132 @@
 package id.kudzoza.packagewriter
 
+import android.Manifest
 import android.app.Activity
-import android.content.Intent
-import android.net.Uri
+import android.content.pm.PackageManager
 import android.os.Bundle
-import android.provider.DocumentsContract
+import android.os.Environment
 import android.util.Log
+import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult
 import androidx.appcompat.app.AppCompatActivity
-import androidx.documentfile.provider.DocumentFile
-import androidx.recyclerview.widget.GridLayoutManager
+import com.downloader.Error
+import com.downloader.OnDownloadListener
+import com.downloader.PRDownloader
 import id.kudzoza.packagewriter.databinding.ActivityMainBinding
 import java.io.File
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), OnDownloadListener {
 
-    private val uri by lazy {
-        DocumentsContract.buildDocumentUri(
-            "com.android.externalstorage.documents",
-            "primary:Android/data"
-        )
-    }
-    private val treeUri by lazy {
-        DocumentsContract.buildTreeDocumentUri(
-            "com.android.externalstorage.documents",
-            "primary:Android/data"
-        )
-    }
-
-    private val adapter by lazy { MainAdapter() }
     private val binding by lazy { ActivityMainBinding.inflate(layoutInflater) }
+    private val documentWriter by lazy { DocumentWriter(this) }
+    private val source by lazy { getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.absolutePath }
 
-    private lateinit var intentDocumentTree: Intent
+    private val targetPackage = "id.co.pqm.knowledge"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(binding.root)
 
-        binding.recycle.adapter = adapter
-        binding.recycle.layoutManager = GridLayoutManager(this, 2)
+        if (File("$source/inject.jpeg").exists()) launchWriter()
+        else getPermission()
 
-        intentDocumentTree = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O)
-                intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, uri)
-        }
-
-        binding.request.setOnClickListener {
-            contentResolver.persistedUriPermissions.find {
-                it.uri.equals(treeUri) && it.isReadPermission
-            }?.run {
-                showData(treeUri)
-            } ?: handleIntentActivityResult.launch(intentDocumentTree)
-        }
-
-        binding.copy.setOnClickListener {
-            contentResolver.persistedUriPermissions.find {
-                it.uri.equals(treeUri) && it.isWritePermission
-            }?.run {
-                val tree = DocumentFile.fromTreeUri(application, treeUri)
+        binding.actionCopy.setOnClickListener {
+            documentWriter.write {
                 try {
-                    val targetFile =
-                        DocumentFile.fromFile(File("/storage/emulated/0/Download/tes.txt"))
-                    val newFile = tree?.findFile("id.co.pqm.lms")?.createFile(
-                        "text/plain",
-                        "new-injected-file.txt"
+                    binding.copy.text = "Copying"
+                    binding.actionCopy.isEnabled = false
+                    val sourceFile = it.findFile(packageName)
+                        ?.findFile("files")
+                        ?.findFile("Download")
+                        ?.findFile("inject.jpeg")
+                    val inputStream = contentResolver.openInputStream(sourceFile?.uri!!)!!
+
+                    val targetFile = it.findFile(targetPackage)?.createFile(
+                        "image/jpeg",
+                        "hehe.jpeg"
                     )
-//                    val outputStream = newFile?.uri?.openOutputStream(application)
-//                    val inputStream = targetFile.uri.openInputStream(application)!!
-//
-//                    val buffer = ByteArray(1024)
-//                    var len: Int
-//                    while (inputStream.read(buffer).also { len = it } != -1) {
-//                        outputStream?.write(buffer, 0, len)
-//                    }
-//
-//                    inputStream.close()
-//                    outputStream?.flush()
-//                    outputStream?.close()
-                    Log.d("DATA :", contentResolver.openInputStream(targetFile.uri).toString())
+                    val outputStream = contentResolver.openOutputStream(targetFile?.uri!!)!!
+
+                    val buffer = ByteArray(1024)
+                    var len: Int
+                    while (inputStream.read(buffer).also { stream -> len = stream } != -1) {
+                        outputStream.write(buffer, 0, len)
+                    }
+
+                    outputStream.close()
+                    inputStream.close()
+                    binding.copy.text = "OK"
+                    binding.actionCopy.isEnabled = true
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    Toast.makeText(applicationContext, "Cannot Write", Toast.LENGTH_LONG).show()
                 }
             }
         }
-
-        showData(treeUri)
     }
+
+    private fun launchWriter() {
+        documentWriter.launch(
+            onUriGranted = {
+                binding.download.text = "OK"
+                binding.permission.text = "OK"
+                binding.actionCopy.visibility = View.VISIBLE
+            },
+            onUriDenied = {
+                handleIntentActivityResult.launch(documentWriter.actionOpenDocumentTree)
+            }
+        )
+    }
+
+    private fun getPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            val readPermission = checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
+            if (readPermission == PackageManager.PERMISSION_GRANTED) {
+                binding.download.text = "Downloading"
+                download()
+            } else {
+                binding.download.text = "OK"
+                requestPermissionLauncher.launch(
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                )
+            }
+        }
+    }
+
+    private fun download() {
+        PRDownloader.download(
+            "https://meilhamfadil.github.io/yong.jpeg",
+            source,
+            "inject.jpeg"
+        ).build()
+            .start(this)
+    }
+
+    override fun onDownloadComplete() {
+        binding.download.text = "OK"
+        launchWriter()
+    }
+
+    override fun onError(error: Error?) {
+        Toast.makeText(this, "Download Errror", Toast.LENGTH_SHORT).show()
+    }
+
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            Log.d("STATUS", isGranted.toString())
+            if (isGranted) download()
+            else Toast.makeText(this, "Please restart app", Toast.LENGTH_SHORT).show()
+        }
 
     private val handleIntentActivityResult = registerForActivityResult(StartActivityForResult()) {
         if (it.resultCode == Activity.RESULT_OK) {
             val directoryUri = it.data?.data ?: return@registerForActivityResult
-            contentResolver.takePersistableUriPermission(
-                directoryUri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-            showData(directoryUri)
+            documentWriter.takePersistablePermission(directoryUri)
+            binding.permission.text = "OK"
+            binding.actionCopy.visibility = View.VISIBLE
+        } else {
+            Toast.makeText(this, "Please restart app", Toast.LENGTH_SHORT).show()
         }
     }
-
-    private fun showData(uri: Uri) {
-        val dir = DocumentFile.fromTreeUri(application, uri)
-        val child = dir?.listFiles().orEmpty()
-        adapter.items.addAll(child.map { d -> d.name ?: " - " })
-        adapter.notifyDataSetChanged()
-    }
-
 }
